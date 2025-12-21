@@ -82,6 +82,7 @@ def disable_mouse_tracking() -> None:
     sys.stdout.flush()
 
 def render_canvas(image: Image.Image) -> None:
+    sys.stdout.write(terminal_code.clear_screen)
     buffer: io.BytesIO = io.BytesIO()
     image.save(buffer, format='PNG')
     image_data: bytes = buffer.getvalue()
@@ -96,10 +97,6 @@ def render_canvas(image: Image.Image) -> None:
     )
     sys.stdout.write(output)
     sys.stdout.flush()
-
-def render_full_canvas(canvas: Image.Image) -> None:
-    sys.stdout.write(terminal_code.clear_screen)
-    render_canvas(canvas)
 
 def read_mouse_event() -> tuple[int, int, int, str]:
     mouse_data: str = ''
@@ -214,7 +211,7 @@ def run_event_loop(
 
             current_time: float = time.time()
             if needs_redraw and (current_time - last_render_time) >= min_frame_time:
-                render_full_canvas(canvas)
+                render_canvas(canvas)
                 needs_redraw = False
                 last_render_time = current_time
     finally:
@@ -233,6 +230,3 @@ def main(args: list[str]) -> str:
     run_event_loop(canvas, drawing_context, canvas_width, file_descriptor)
 
     return ''
-
-def handle_result(args: list[str], answer: str, target_window_id: int, boss: Boss) -> None:
-    pass
