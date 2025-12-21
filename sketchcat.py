@@ -23,20 +23,22 @@ import base64
 import io
 import termios
 import tty
+import time
 
 class terminal_code:
     query_window_size: str = '\033[14t'
     clear_screen: str = '\033[2J\033[H'
     enable_mouse_modes: str = '\033[?1000h\033[?1003h\033[?1006h\033[?1016h'
     disable_mouse_modes: str = '\033[?1016l\033[?1006l\033[?1003l\033[?1000l'
-    kitty_graphics_prefix: str = '\033_Gf=100,a=T,t=d;'
     kitty_graphics_suffix: str = '\033\\'
+    canvas_image_id: int = 1
 
 class config:
     canvas_height: int = 600
     brush_size: int = 5
     brush_color: tuple[int, int, int, int] = (255, 255, 255, 255)
     border_color: tuple[int, int, int, int] = (255, 255, 255, 255)
+    max_fps: int = 30
 
 def get_terminal_width(file_descriptor: int) -> int:
     old_terminal_settings: list = termios.tcgetattr(file_descriptor)
@@ -84,13 +86,20 @@ def render_canvas(image: Image.Image) -> None:
     image.save(buffer, format='PNG')
     image_data: bytes = buffer.getvalue()
     encoded_data: str = base64.b64encode(image_data).decode('ascii')
+
+    image_id: int = terminal_code.canvas_image_id
+
     output: str = (
-        f'{terminal_code.kitty_graphics_prefix}'
+        f'\033_Gf=100,a=T,t=d,i={image_id};'
         f'{encoded_data}'
         f'{terminal_code.kitty_graphics_suffix}'
     )
     sys.stdout.write(output)
     sys.stdout.flush()
+
+def render_full_canvas(canvas: Image.Image) -> None:
+    sys.stdout.write(terminal_code.clear_screen)
+    render_canvas(canvas)
 
 def read_mouse_event() -> tuple[int, int, int, str]:
     mouse_data: str = ''
@@ -120,6 +129,23 @@ def draw_brush(
         fill=color
     )
 
+def draw_stroke(
+    drawing_context: ImageDraw.ImageDraw,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    brush_size: int,
+    color: tuple[int, int, int, int]
+) -> None:
+    drawing_context.line(
+        [(x1, y1), (x2, y2)],
+        fill=color,
+        width=brush_size * 2,
+        joint='curve'
+    )
+    draw_brush(drawing_context, x2, y2, brush_size, color)
+
 def run_event_loop(
     canvas: Image.Image,
     drawing_context: ImageDraw.ImageDraw,
@@ -135,6 +161,8 @@ def run_event_loop(
         last_mouse_x: int = -1
         last_mouse_y: int = -1
         needs_redraw: bool = False
+        last_render_time: float = time.time()
+        min_frame_time: float = 1.0 / config.max_fps
 
         while True:
             char: str = sys.stdin.read(1)
@@ -157,23 +185,38 @@ def run_event_loop(
                     has_moved: bool = last_mouse_x != x or last_mouse_y != y
 
                     if is_drawing and is_in_bounds and has_moved:
-                        draw_brush(
-                            drawing_context,
-                            x,
-                            y,
-                            config.brush_size,
-                            config.brush_color
-                        )
+                        if last_mouse_x >= 0 and last_mouse_y >= 0:
+                            draw_stroke(
+                                drawing_context,
+                                last_mouse_x,
+                                last_mouse_y,
+                                x,
+                                y,
+                                config.brush_size,
+                                config.brush_color
+                            )
+                        else:
+                            draw_brush(
+                                drawing_context,
+                                x,
+                                y,
+                                config.brush_size,
+                                config.brush_color
+                            )
                         last_mouse_x = x
                         last_mouse_y = y
                         needs_redraw = True
+                    elif not is_drawing:
+                        last_mouse_x = -1
+                        last_mouse_y = -1
                 elif sequence == 'q':
                     break
 
-            if needs_redraw:
-                sys.stdout.write(terminal_code.clear_screen)
-                render_canvas(canvas)
+            current_time: float = time.time()
+            if needs_redraw and (current_time - last_render_time) >= min_frame_time:
+                render_full_canvas(canvas)
                 needs_redraw = False
+                last_render_time = current_time
     finally:
         termios.tcsetattr(file_descriptor, termios.TCSADRAIN, old_terminal_settings)
         disable_mouse_tracking()
