@@ -4,8 +4,9 @@ A kitty terminal sketchpad kitten.
 ## Prerequisites
 
 - [Kitty terminal emulator](https://sw.kovidgoyal.net/kitty/)
-- Python 3.6 or higher
-- Pillow (PIL) library
+- Python 3.12 or higher
+- [uv](https://docs.astral.sh/uv/) package manager
+- Pillow (PIL) library (installed automatically by uv)
 
 ## Installation
 
@@ -15,14 +16,18 @@ git clone https://github.com/BlinkDynamo/sketchcat.git
 cd sketchcat
 ```
 
-2. Install Python dependencies:
+2. Install dependencies and symlink the kitten:
 ```bash
-pip install -r requirements.txt
+make install
 ```
 
-3. Symlink the kitten to your kitty config directory:
+This will use uv to sync dependencies and create a symlink
+in your kitty config directory.
+
+## Uninstallation
+
 ```bash
-ln -s $(pwd -P)/sketchcat.py ~/.config/kitty/sketchcat.py
+make uninstall
 ```
 
 ## Usage
@@ -43,13 +48,10 @@ With this added, pressing `Ctrl+Shift+D` in any kitty terminal
 will launch sketchcat.
 
 ## Controls
-Sketchcat is very simple by design. 
+Sketchcat is very simple by design.
 
 - **Left mouse button + drag**: Draw on the canvas
 - **q**: Quit and return to terminal
-
-Even after quiting, your drawing will stay in your terminal
-until the terminal is cleared.
 
 ## Configuration
 
