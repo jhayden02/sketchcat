@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run
 
 # sketchcat - A kitty terminal sketchpad kitten.
 # Copyright (C) 2025 - Josh Hayden.
@@ -18,6 +18,7 @@
 
 from kitty.boss import Boss
 from PIL import Image, ImageDraw
+from dataclasses import dataclass, field
 import sys
 import base64
 import io
@@ -39,6 +40,18 @@ class config:
     brush_color: tuple[int, int, int, int] = (255, 255, 255, 255)
     border_color: tuple[int, int, int, int] = (255, 255, 255, 255)
     max_fps: int = 30
+
+@dataclass
+class drawing_state:
+    canvas: Image.Image
+    drawing_context: ImageDraw.ImageDraw
+    canvas_width: int
+    is_mouse_down: bool = False
+    last_mouse_x: int = -1
+    last_mouse_y: int = -1
+    needs_redraw: bool = False
+    last_render_time: float = field(default_factory=time.time)
+    min_frame_time: float = 1.0 / config.max_fps
 
 def get_terminal_width(file_descriptor: int) -> int:
     old_terminal_settings: list = termios.tcgetattr(file_descriptor)
@@ -143,90 +156,119 @@ def draw_stroke(
     )
     draw_brush(drawing_context, x2, y2, brush_size, color)
 
-def run_event_loop(
-    canvas: Image.Image,
-    drawing_context: ImageDraw.ImageDraw,
-    canvas_width: int,
-    file_descriptor: int
-) -> None:
-    old_terminal_settings: list = termios.tcgetattr(file_descriptor)
+def process_drawing(state: drawing_state, x: int, y: int, button: int) -> None:
+    is_drawing: bool = state.is_mouse_down and (button == 0 or button == 32)
+    if not is_drawing:
+        state.last_mouse_x = -1
+        state.last_mouse_y = -1
+        return
 
-    try:
-        tty.setraw(file_descriptor)
+    is_in_bounds: bool = (
+        0 <= x < state.canvas_width and 0 <= y < config.canvas_height
+    )
+    if not is_in_bounds:
+        return
 
-        is_mouse_down: bool = False
-        last_mouse_x: int = -1
-        last_mouse_y: int = -1
-        needs_redraw: bool = False
-        last_render_time: float = time.time()
-        min_frame_time: float = 1.0 / config.max_fps
+    has_moved: bool = state.last_mouse_x != x or state.last_mouse_y != y
+    if not has_moved:
+        return
 
-        while True:
-            char: str = sys.stdin.read(1)
+    if state.last_mouse_x >= 0 and state.last_mouse_y >= 0:
+        draw_stroke(
+            state.drawing_context,
+            state.last_mouse_x,
+            state.last_mouse_y,
+            x,
+            y,
+            config.brush_size,
+            config.brush_color
+        )
+    else:
+        draw_brush(
+            state.drawing_context, x, y, config.brush_size, config.brush_color
+        )
 
-            if char == 'q':
+    state.last_mouse_x = x
+    state.last_mouse_y = y
+    state.needs_redraw = True
+
+def handle_escape_sequence(state: drawing_state) -> bool:
+    sequence: str = sys.stdin.read(2)
+
+    if sequence == 'q':
+        return True
+
+    if sequence != '[<':
+        return False
+
+    button: int
+    x: int
+    y: int
+    event_type: str
+    button, x, y, event_type = read_mouse_event()
+
+    if event_type == 'M' and button == 0:
+        state.is_mouse_down = True
+    elif event_type == 'm' and button == 0:
+        state.is_mouse_down = False
+
+    process_drawing(state, x, y, button)
+    return False
+
+def reinit_canvas(state: drawing_state) -> None:
+    state.canvas, state.drawing_context = init_canvas(
+        state.canvas_width, config.canvas_height
+    )
+    state.needs_redraw = True
+
+def maybe_render(state: drawing_state) -> None:
+    current_time: float = time.time()
+    if not state.needs_redraw:
+        return
+    if (current_time - state.last_render_time) < state.min_frame_time:
+        return
+
+    render_canvas(state.canvas)
+    state.needs_redraw = False
+    state.last_render_time = current_time
+
+def run_event_loop(state: drawing_state) -> None:
+    while True:
+        char: str = sys.stdin.read(1)
+
+        if char == 'q':
+            break
+        if char == 'c':
+            reinit_canvas(state)
+        if char == '\033':
+            if handle_escape_sequence(state):
                 break
 
-            if char == '\033':
-                sequence: str = sys.stdin.read(2)
-                if sequence == '[<':
-                    button, x, y, event_type = read_mouse_event()
-
-                    if event_type == 'M' and button == 0:
-                        is_mouse_down = True
-                    elif event_type == 'm' and button == 0:
-                        is_mouse_down = False
-
-                    is_drawing: bool = is_mouse_down and (button == 0 or button == 32)
-                    is_in_bounds: bool = 0 <= x < canvas_width and 0 <= y < config.canvas_height
-                    has_moved: bool = last_mouse_x != x or last_mouse_y != y
-
-                    if is_drawing and is_in_bounds and has_moved:
-                        if last_mouse_x >= 0 and last_mouse_y >= 0:
-                            draw_stroke(
-                                drawing_context,
-                                last_mouse_x,
-                                last_mouse_y,
-                                x,
-                                y,
-                                config.brush_size,
-                                config.brush_color
-                            )
-                        else:
-                            draw_brush(
-                                drawing_context,
-                                x,
-                                y,
-                                config.brush_size,
-                                config.brush_color
-                            )
-                        last_mouse_x = x
-                        last_mouse_y = y
-                        needs_redraw = True
-                    elif not is_drawing:
-                        last_mouse_x = -1
-                        last_mouse_y = -1
-                elif sequence == 'q':
-                    break
-
-            current_time: float = time.time()
-            if needs_redraw and (current_time - last_render_time) >= min_frame_time:
-                render_canvas(canvas)
-                needs_redraw = False
-                last_render_time = current_time
-    finally:
-        termios.tcsetattr(file_descriptor, termios.TCSADRAIN, old_terminal_settings)
-        disable_mouse_tracking()
+        maybe_render(state)
 
 def main(args: list[str]) -> str:
     file_descriptor: int = sys.stdin.fileno()
-
     canvas_width: int = get_terminal_width(file_descriptor)
-    canvas, drawing_context = init_canvas(canvas_width, config.canvas_height)
+    canvas: Image.Image
+    ctx: ImageDraw.ImageDraw
+    canvas, ctx = init_canvas(canvas_width, config.canvas_height)
 
-    enable_mouse_tracking()
-    render_canvas(canvas)
+    state: drawing_state = drawing_state(
+        canvas=canvas,
+        drawing_context=ctx,
+        canvas_width=canvas_width
+    )
 
-    run_event_loop(canvas, drawing_context, canvas_width, file_descriptor)
+    old_terminal_settings: list = termios.tcgetattr(file_descriptor)
+    try:
+        tty.setraw(file_descriptor)
+        enable_mouse_tracking()
+        render_canvas(state.canvas)
+        run_event_loop(state)
+    finally:
+        termios.tcsetattr(
+            file_descriptor, termios.TCSADRAIN, old_terminal_settings
+        )
+        disable_mouse_tracking()
 
     return ''
